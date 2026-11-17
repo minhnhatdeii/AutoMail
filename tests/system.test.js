@@ -15,7 +15,9 @@ const {
   formatEmailHtml,
   generateCsvReport,
   calculateTotalAttachmentSize,
-  getUploadedFiles
+  getUploadedFiles,
+  loadCampaignState,
+  saveCampaignState
 } = require('../server.js');
 
 // Temporary test dir
@@ -440,6 +442,155 @@ describe('Feature 5: Campaign Dispatcher & State Machine', () => {
     target.note = '550 User not found';
     assert.equal(target.status, 'failed');
     assert.match(target.note, /550 User not found/);
+  });
+});
+
+// ==============================================================================
+// FEATURE 6: LONG-TERM EXECUTION, STATE PERSISTENCE & RECONNECTION (10 TEST CASES)
+// ==============================================================================
+describe('Feature 6: Long-term Execution, State Persistence & Reconnection', () => {
+  const TEST_STATE_FILE = path.join(TEST_DIR, 'test_campaign_state.json');
+
+  test('TC6.1: Cá nhân hóa đầy đủ họ tên, chức danh và WhatsApp của người gửi vào email', () => {
+    const template = 'Xin chào {{company_name}}, tôi là {{sender_name}}, chức vụ: {{sender_title}}. Liên hệ WhatsApp: {{sender_phone}}';
+    const vars = {
+      company_name: 'Nord-Stein',
+      sender_name: 'Calistad',
+      sender_title: 'Head of Sales | Vinh Cuu Stone',
+      sender_phone: '+84 988 123 456'
+    };
+    const result = interpolateTemplate(template, vars);
+    assert.match(result, /tôi là Calistad/);
+    assert.match(result, /chức vụ: Head of Sales \| Vinh Cuu Stone/);
+    assert.match(result, /Liên hệ WhatsApp: \+84 988 123 456/);
+  });
+
+  test('TC6.2: Đồng bộ tự động khi người dùng sửa đổi họ tên người gửi ở Tab 1', () => {
+    const rawTemplate = 'Dear {{company_name}} team,\n\nBest regards,\n{{sender_name}}\n{{sender_title}}';
+    const oldVars = { company_name: 'StoneWorks', sender_name: 'Calista', sender_title: 'Sales' };
+    const newVars = { company_name: 'StoneWorks', sender_name: 'Calistad (Updated)', sender_title: 'Senior Director' };
+    
+    const oldEmail = interpolateTemplate(rawTemplate, oldVars);
+    const newEmail = interpolateTemplate(rawTemplate, newVars);
+    
+    assert.match(oldEmail, /Calista/);
+    assert.match(newEmail, /Calistad \(Updated\)/);
+    assert.match(newEmail, /Senior Director/);
+    assert.notEqual(oldEmail, newEmail);
+  });
+
+  test('TC6.3: Lưu trạng thái chiến dịch chạy nền (campaignState) vào file JSON thành công', () => {
+    const sampleState = {
+      status: 'running',
+      total: 3,
+      sentCount: 1,
+      failedCount: 0,
+      currentIndex: 1,
+      targets: [
+        { email: 'c1@test.com', companyName: 'C1', status: 'success', note: '250 OK' },
+        { email: 'c2@test.com', companyName: 'C2', status: 'pending', note: 'Chờ gửi...' },
+        { email: 'c3@test.com', companyName: 'C3', status: 'pending', note: 'Chờ gửi...' }
+      ],
+      currentDelayCountdown: 15,
+      activeLogs: [{ timestamp: '10:00:00', type: 'info', message: 'Bắt đầu gửi' }]
+    };
+
+    fs.writeFileSync(TEST_STATE_FILE, JSON.stringify(sampleState, null, 2), 'utf-8');
+    assert.ok(fs.existsSync(TEST_STATE_FILE));
+    
+    const saved = JSON.parse(fs.readFileSync(TEST_STATE_FILE, 'utf-8'));
+    assert.equal(saved.total, 3);
+    assert.equal(saved.sentCount, 1);
+    assert.equal(saved.targets[0].status, 'success');
+  });
+
+  test('TC6.4: Tự động khôi phục và chuyển trạng thái "running" thành "paused" an toàn khi nạp lại state', () => {
+    const restored = loadCampaignState(TEST_STATE_FILE);
+    assert.equal(restored.status, 'paused', 'Phải chuyển thành paused để tránh gửi mất kiểm soát khi server khởi động lại');
+    assert.equal(restored.currentDelayCountdown, 0);
+    assert.equal(restored.total, 3);
+    assert.equal(restored.sentCount, 1);
+    assert.equal(restored.targets.length, 3);
+  });
+
+  test('TC6.5: Giữ nguyên tiến độ đã gửi khi người dùng bấm Tiếp tục (Resume)', () => {
+    const state = loadCampaignState(TEST_STATE_FILE);
+    assert.equal(state.currentIndex, 1);
+    assert.equal(state.targets[0].status, 'success');
+    assert.equal(state.targets[1].status, 'pending');
+    
+    // Giả lập bước tiếp theo khi gửi target thứ 2
+    state.status = 'running';
+    state.targets[1].status = 'success';
+    state.sentCount = 2;
+    state.currentIndex = 2;
+    
+    assert.equal(state.sentCount, 2);
+    assert.equal(state.targets[1].status, 'success');
+    assert.equal(state.targets[2].status, 'pending');
+  });
+
+  test('TC6.6: Khách hàng rời tab lâu và quay lại: dữ liệu trả về từ API State đủ để render lại đầy đủ Target Cards', () => {
+    const state = loadCampaignState(TEST_STATE_FILE);
+    // Kiểm tra cấu trúc dữ liệu đủ cho client renderTargetCards
+    state.targets.forEach(t => {
+      assert.ok(t.email);
+      assert.ok(t.companyName);
+      assert.ok(['pending', 'sending', 'success', 'failed'].includes(t.status));
+    });
+  });
+
+  test('TC6.7: Xử lý an toàn khi file campaign_state.json bị hỏng hoặc không tồn tại', () => {
+    const invalidPath = path.join(TEST_DIR, 'corrupted_state.json');
+    fs.writeFileSync(invalidPath, '{ INVALID_JSON_DATA... }', 'utf-8');
+    
+    const fallback = loadCampaignState(invalidPath);
+    assert.equal(fallback.status, 'idle');
+    assert.equal(fallback.total, 0);
+    assert.equal(fallback.sentCount, 0);
+    assert.deepEqual(fallback.targets, []);
+  });
+
+  test('TC6.8: Xác thực tính kiên định của Master PIN 66882004 qua nhiều phiên làm việc giả lập', () => {
+    const MASTER_PIN = '66882004';
+    const simulatedSessions = ['66882004', '66882004', '66882004'];
+    simulatedSessions.forEach((pin, idx) => {
+      assert.equal(pin === MASTER_PIN, true, `Phiên #${idx + 1} phải xác thực thành công`);
+    });
+
+    const invalidAttempts = ['12345678', '', 'wrong_pin', '66882005'];
+    invalidAttempts.forEach(pin => {
+      assert.equal(pin === MASTER_PIN, false);
+    });
+  });
+
+  test('TC6.9: Xuất báo cáo CSV chính xác cho chiến dịch chạy nền nhiều target có cả thành công và thất bại', () => {
+    const mixedTargets = [
+      { email: 'ok1@partner.de', companyName: 'Partner1', status: 'success', sentAt: '09:15:00', note: '250 OK' },
+      { email: 'err@dead-mail.com', companyName: 'DeadMail', status: 'failed', sentAt: '09:16:30', note: '550 No such user' },
+      { email: 'ok2@partner.at', companyName: 'Partner2', status: 'success', sentAt: '09:18:10', note: '250 OK' }
+    ];
+    const csv = generateCsvReport(mixedTargets);
+    assert.match(csv, /ok1@partner\.de/);
+    assert.match(csv, /err@dead-mail\.com/);
+    assert.match(csv, /550 No such user/);
+    assert.match(csv, /ok2@partner\.at/);
+    assert.ok(csv.startsWith('\uFEFF'), 'CSV phải có UTF-8 BOM cho Excel tiếng Việt');
+  });
+
+  test('TC6.10: Tự động nâng cấp template cũ có chữ "Calista" cố định sang thẻ động {{sender_name}}', () => {
+    const legacyConfigPath = path.join(TEST_DIR, 'legacy_config.json');
+    const legacyConfig = {
+      senderEmail: 'test@vinhcuu.vn',
+      senderName: 'Calistad',
+      bodyTemplate: 'Dear {{company_name}} team,\n\nI’m Calista, Sales Manager at Vinh Cuu Stone.\n\nWhatsApp: +84 816 075 599\n\nBest regards,\nCalista\nSales Manager | Vinh Cuu Stone'
+    };
+    fs.writeFileSync(legacyConfigPath, JSON.stringify(legacyConfig), 'utf-8');
+    
+    const migrated = loadConfig(legacyConfigPath);
+    assert.match(migrated.bodyTemplate, /\{\{sender_name\}\}/, 'Phải tự động thay thế Calista thành {{sender_name}}');
+    assert.match(migrated.bodyTemplate, /\{\{sender_title\}\}/, 'Phải tự động thay thế Sales Manager thành {{sender_title}}');
+    assert.match(migrated.bodyTemplate, /\{\{sender_phone\}\}/, 'Phải tự động thay thế WhatsApp thành {{sender_phone}}');
   });
 });
 

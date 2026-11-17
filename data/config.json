@@ -1,11 +1,11 @@
 {
   "senderEmail": "minhnhatyt2004@gmail.com",
   "appPassword": "xpjp xcjm ciai iomk",
-  "senderName": "Calista",
+  "senderName": "Calistad",
   "senderTitle": "Sales Manager | Vinh Cuu Stone",
   "senderPhone": "+84 816 075 599",
   "subjectTemplate": "Vietnam Basalt & Granite – Direct Quarry & Factory Supplier",
-  "bodyTemplate": "Dear {{company_name}} team,\n\nI’m Calista, Sales Manager at Vinh Cuu Stone. We have our own quarry and factory in Vietnam, supplying natural basalt (bluestone) and granite directly.\n\nOur main products:\n- Bluestone saw cut pavers and tiles: 600x1200, 600x900, 400x600, 300x600, in 20/30/50 mm, with 5 finishes\n- Cobbles, tumbled pavers, crazy paving and stepping stones\n- Kerbs, pool coping and wall cladding\n- Granite (yellow and gray) and pebbles\n\nI’ve attached our 2026 catalogue and photos. Are you currently looking for a supplier? If so, please send me the destination port, the products you need and the max cargo weight, and I’ll prepare a quotation right away.\n\nWe look forward to a long-term cooperation with you.\n\nWhatsApp: +84 816 075 599\n\nBest regards,\nCalista\nSales Manager | Vinh Cuu Stone",
+  "bodyTemplate": "Dear {{company_name}} team,\n\nI’m {{sender_name}}, {{sender_title}}. We have our own quarry and factory in Vietnam, supplying natural basalt (bluestone) and granite directly.\n\nOur main products:\n- Bluestone saw cut pavers and tiles: 600x1200, 600x900, 400x600, 300x600, in 20/30/50 mm, with 5 finishes\n- Cobbles, tumbled pavers, crazy paving and stepping stones\n- Kerbs, pool coping and wall cladding\n- Granite (yellow and gray) and pebbles\n\nI’ve attached our 2026 catalogue and photos. Are you currently looking for a supplier? If so, please send me the destination port, the products you need and the max cargo weight, and I’ll prepare a quotation right away.\n\nWe look forward to a long-term cooperation with you.\n\nWhatsApp: {{sender_phone}}\n\nBest regards,\n{{sender_name}}\n{{sender_title}}",
   "delayMin": 20,
   "delayMax": 45
 }

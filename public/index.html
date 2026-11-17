@@ -155,6 +155,9 @@
             <label for="senderPhone">WhatsApp / Hotline:</label>
             <input type="text" id="senderPhone" class="form-input" value="+84 816 075 599">
           </div>
+          <div class="form-hint" style="grid-column: 1 / -1; margin-top:-6px; color:#555;">
+            💡 <strong>Tự động đồng bộ:</strong> Khi bạn thay đổi họ tên, chức danh hoặc WhatsApp tại đây, hệ thống sẽ tự động đồng bộ vào các thẻ <code>{{sender_name}}</code>, <code>{{sender_title}}</code>, <code>{{sender_phone}}</code> trong mẫu thư (Tab 2) và toàn bộ email gửi đi.
+          </div>
         </div>
 
         <div style="display: flex; gap: 12px; margin-top: 10px; flex-wrap: wrap;">
@@ -286,8 +289,23 @@
         <div class="form-group">
           <label for="bodyTemplate">Nội Dung Thư (Body):</label>
           <textarea id="bodyTemplate" class="form-textarea"></textarea>
-          <div class="form-hint">
-            <strong>Cơ chế tự động:</strong> Thẻ <code>{{company_name}}</code> sẽ tự động được hệ thống thay thế thành tên doanh nghiệp bóc tách từ email (Ví dụ: <code>info@nord-stein.de</code> &rarr; <code>Nord-Stein</code> &rarr; <em>Dear Nord-Stein team,</em>).
+          <div class="form-hint" style="line-height: 1.6; margin-top: 8px;">
+            <div style="font-weight: 700; color: var(--pink-primary);">Các thẻ cá nhân hóa tự động (Bấm để chèn vào thư):</div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap; margin:6px 0;">
+              <span class="retro-badge pink" style="cursor:pointer; font-size:0.8rem; padding:4px 8px;" onclick="insertTagIntoBody('{{company_name}}')" title="Chèn tên công ty đối tác">+ {{company_name}}</span>
+              <span class="retro-badge yellow" style="cursor:pointer; font-size:0.8rem; padding:4px 8px;" onclick="insertTagIntoBody('{{sender_name}}')" title="Chèn họ tên người gửi (Tab 1)">+ {{sender_name}}</span>
+              <span class="retro-badge yellow" style="cursor:pointer; font-size:0.8rem; padding:4px 8px;" onclick="insertTagIntoBody('{{sender_title}}')" title="Chèn chức danh (Tab 1)">+ {{sender_title}}</span>
+              <span class="retro-badge yellow" style="cursor:pointer; font-size:0.8rem; padding:4px 8px;" onclick="insertTagIntoBody('{{sender_phone}}')" title="Chèn WhatsApp / Hotline (Tab 1)">+ {{sender_phone}}</span>
+            </div>
+            <div style="font-size:0.83rem; color:#555;">
+              • <code>{{company_name}}</code>: Tự động lấy tên công ty bóc tách từ email đối tác.<br>
+              • <code>{{sender_name}}</code>, <code>{{sender_title}}</code>, <code>{{sender_phone}}</code>: Tự động lấy họ tên, chức danh, WhatsApp bạn đã điền ở <strong>Tab 1</strong>.
+            </div>
+            <div style="margin-top:8px;">
+              <button type="button" class="retro-btn secondary" id="btnSyncSenderToTemplate" style="font-size:0.8rem; padding:4px 10px;" title="Cập nhật chữ ký người gửi theo Tab 1">
+                🔄 Cập nhật họ tên, chức vụ, WhatsApp từ Tab 1 vào mẫu thư
+              </button>
+            </div>
           </div>
         </div>
 

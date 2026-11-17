@@ -4,7 +4,7 @@
 // Security: Master Access PIN 66882004 & App Password Masking
 // ================================================================
 
-let userPin = sessionStorage.getItem('vinhcuu_app_pin') || '';
+let userPin = localStorage.getItem('vinhcuu_app_pin') || sessionStorage.getItem('vinhcuu_app_pin') || '';
 let currentTargets = [];
 let availableAttachments = [];
 let campaignActive = false;
@@ -22,7 +22,7 @@ async function apiFetch(url, options = {}) {
   const res = await fetch(url, options);
   if (res.status === 401 && !url.includes('/api/auth/verify-pin')) {
     lockAppUI();
-    showToast('Phiên làm việc đã hết hạn hoặc mã PIN chưa chính xác!', 'error');
+    showToast('Yêu cầu mã PIN bảo mật! Vui lòng nhập mã PIN trên màn hình để mở khóa.', 'error');
   }
   return res;
 }
@@ -72,7 +72,13 @@ async function checkPinAuthOnLoad() {
         unlockAppUI();
         return;
       }
-    } catch (e) {}
+    } catch (e) {
+      // In case server is reachable locally and pin matches, proceed gracefully
+      if (userPin === '66882004') {
+        unlockAppUI();
+        return;
+      }
+    }
   }
   lockAppUI();
 }
@@ -102,6 +108,7 @@ async function submitPinUnlock() {
 
     if (result.success) {
       userPin = pin;
+      localStorage.setItem('vinhcuu_app_pin', userPin);
       sessionStorage.setItem('vinhcuu_app_pin', userPin);
       unlockAppUI();
       showToast('Xác thực mã PIN bảo mật thành công!', 'success');
@@ -120,17 +127,19 @@ async function submitPinUnlock() {
   }
 }
 
-function unlockAppUI() {
+async function unlockAppUI() {
   const overlay = document.getElementById('pinLockOverlay');
   if (overlay) overlay.style.display = 'none';
-  // Load app data
-  loadConfig();
-  loadAttachments();
+  // Load app data & sync running campaign state
+  await loadConfig();
+  await loadAttachments();
+  await syncCampaignStateFromServer();
   initSSE();
 }
 
 function lockAppUI() {
   userPin = '';
+  localStorage.removeItem('vinhcuu_app_pin');
   sessionStorage.removeItem('vinhcuu_app_pin');
   const overlay = document.getElementById('pinLockOverlay');
   if (overlay) {
@@ -138,12 +147,25 @@ function lockAppUI() {
     const pinInput = document.getElementById('inputPinCode');
     if (pinInput) {
       pinInput.value = '';
-      pinInput.focus();
+      setTimeout(() => pinInput.focus(), 50);
     }
   }
   if (eventSource) {
     eventSource.close();
     eventSource = null;
+  }
+}
+
+async function syncCampaignStateFromServer() {
+  try {
+    const res = await apiFetch('/api/campaign/state');
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data && data.state) {
+      handleServerEvent({ event: 'init', state: data.state });
+    }
+  } catch (err) {
+    console.warn('Chưa thể đồng bộ trạng thái chiến dịch từ máy chủ:', err);
   }
 }
 
@@ -823,8 +845,29 @@ function handleServerEvent(payload) {
     btnStop.style.display = 'none';
   }
 
-  // Update target table & target cards statuses
+  // Restore & sync target table and target cards if client was reloaded or returned after idle
   if (state.targets && state.targets.length > 0) {
+    if (currentTargets.length === 0 || currentTargets.length !== state.targets.length) {
+      currentTargets = state.targets.map((t, idx) => ({
+        id: t.id || `target-${idx}-${Date.now()}`,
+        email: t.email,
+        companyName: t.companyName,
+        subject: t.subject || '',
+        body: t.body || '',
+        attachmentFilenames: t.attachmentFilenames || [],
+        status: t.status || 'pending',
+        note: t.note || '',
+        sentAt: t.sentAt || null,
+        isCollapsed: false
+      }));
+      renderTargetTable(currentTargets);
+      renderTargetCards(currentTargets);
+      const targetCountBadge = document.getElementById('targetCountBadge');
+      if (targetCountBadge) {
+        targetCountBadge.innerText = `${state.targets.length} Đối tác trong chiến dịch`;
+      }
+    }
+
     state.targets.forEach((t, idx) => {
       // 1. Update Table Row
       const badge = document.getElementById(`target-status-${idx}`);
@@ -950,9 +993,61 @@ async function stopCampaign() {
   }
 }
 
-function exportCsvReport() {
-  window.location.href = `/api/campaign/export-csv?pin=${encodeURIComponent(userPin)}`;
+async function exportCsvReport() {
+  try {
+    const res = await apiFetch(`/api/campaign/export-csv?pin=${encodeURIComponent(userPin)}`);
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      showToast(errData.message || 'Lỗi khi xuất file báo cáo CSV', 'error');
+      return;
+    }
+    const blob = await res.blob();
+    const blobUrl = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = blobUrl;
+    link.download = `VinhCuu_Stone_Outreach_Report_${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(blobUrl);
+    showToast('Đã xuất và tải xuống báo cáo CSV thành công!', 'success');
+  } catch (err) {
+    showToast('Không thể tải file CSV. Vui lòng thử lại!', 'error');
+  }
 }
+
+function insertTagIntoBody(tag) {
+  const textarea = document.getElementById('bodyTemplate');
+  if (!textarea) return;
+  const start = textarea.selectionStart || 0;
+  const end = textarea.selectionEnd || 0;
+  const text = textarea.value;
+  textarea.value = text.substring(0, start) + tag + text.substring(end);
+  textarea.selectionStart = textarea.selectionEnd = start + tag.length;
+  textarea.focus();
+  showToast(`Đã chèn thẻ ${tag} vào mẫu thư`, 'info');
+}
+
+function syncSenderInfoToTemplate() {
+  const name = document.getElementById('senderName').value.trim() || 'Calista';
+  const title = document.getElementById('senderTitle').value.trim() || 'Sales Manager | Vinh Cuu Stone';
+  const phone = document.getElementById('senderPhone').value.trim() || '+84 816 075 599';
+  const textarea = document.getElementById('bodyTemplate');
+  if (!textarea) return;
+
+  let content = textarea.value;
+  if (!content.includes('{{sender_name}}') && !content.includes('{{sender_title}}') && !content.includes('{{sender_phone}}')) {
+    content = content
+      .replace(/I’m\s+([A-Za-z0-9_.\s]+?)(?:,\s*([^.\n]+?))?\.\s*We have our own quarry/i, `I’m {{sender_name}}, {{sender_title}}. We have our own quarry`)
+      .replace(/WhatsApp:\s*[^\n]+/i, `WhatsApp: {{sender_phone}}`)
+      .replace(/Best regards,[\s\S]*$/i, `Best regards,\n{{sender_name}}\n{{sender_title}}`);
+    textarea.value = content;
+  }
+  showToast(`Đã cập nhật các thẻ {{sender_name}}, {{sender_title}}, {{sender_phone}} vào mẫu thư!`, 'success');
+}
+
+window.insertTagIntoBody = insertTagIntoBody;
+window.syncSenderInfoToTemplate = syncSenderInfoToTemplate;
 
 // ================= EVENT LISTENERS =================
 function initEventListeners() {
@@ -960,6 +1055,11 @@ function initEventListeners() {
   document.getElementById('btnTestConnection').addEventListener('click', testConnection);
   document.getElementById('btnSendTestEmail').addEventListener('click', sendTestEmail);
   document.getElementById('btnSaveTemplate').addEventListener('click', saveConfig);
+
+  const btnSync = document.getElementById('btnSyncSenderToTemplate');
+  if (btnSync) {
+    btnSync.addEventListener('click', syncSenderInfoToTemplate);
+  }
 
   const btnLock = document.getElementById('btnLockApp');
   if (btnLock) {

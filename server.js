@@ -18,6 +18,7 @@ if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
 const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
+const CAMPAIGN_STATE_FILE = path.join(DATA_DIR, 'campaign_state.json');
 
 // Security: Master Access PIN
 const APP_PIN = process.env.APP_PIN || '66882004';
@@ -46,7 +47,7 @@ const DEFAULT_CONFIG = {
   senderTitle: 'Sales Manager | Vinh Cuu Stone',
   senderPhone: '+84 816 075 599',
   subjectTemplate: 'Vietnam Basalt & Granite – Direct Quarry & Factory Supplier',
-  bodyTemplate: `Dear {{company_name}} team,\n\nI’m Calista, Sales Manager at Vinh Cuu Stone. We have our own quarry and factory in Vietnam, supplying natural basalt (bluestone) and granite directly.\n\nOur main products:\n- Bluestone saw cut pavers and tiles: 600x1200, 600x900, 400x600, 300x600, in 20/30/50 mm, with 5 finishes\n- Cobbles, tumbled pavers, crazy paving and stepping stones\n- Kerbs, pool coping and wall cladding\n- Granite (yellow and gray) and pebbles\n\nI’ve attached our 2026 catalogue and photos. Are you currently looking for a supplier? If so, please send me the destination port, the products you need and the max cargo weight, and I’ll prepare a quotation right away.\n\nWe look forward to a long-term cooperation with you.\n\nWhatsApp: +84 816 075 599\n\nBest regards,\nCalista\nSales Manager | Vinh Cuu Stone`,
+  bodyTemplate: `Dear {{company_name}} team,\n\nI’m {{sender_name}}, {{sender_title}}. We have our own quarry and factory in Vietnam, supplying natural basalt (bluestone) and granite directly.\n\nOur main products:\n- Bluestone saw cut pavers and tiles: 600x1200, 600x900, 400x600, 300x600, in 20/30/50 mm, with 5 finishes\n- Cobbles, tumbled pavers, crazy paving and stepping stones\n- Kerbs, pool coping and wall cladding\n- Granite (yellow and gray) and pebbles\n\nI’ve attached our 2026 catalogue and photos. Are you currently looking for a supplier? If so, please send me the destination port, the products you need and the max cargo weight, and I’ll prepare a quotation right away.\n\nWe look forward to a long-term cooperation with you.\n\nWhatsApp: {{sender_phone}}\n\nBest regards,\n{{sender_name}}\n{{sender_title}}`,
   delayMin: 20,
   delayMax: 45
 };
@@ -57,7 +58,15 @@ function loadConfig(filePath = CONFIG_FILE) {
   try {
     if (fs.existsSync(filePath)) {
       const data = fs.readFileSync(filePath, 'utf-8');
-      return { ...DEFAULT_CONFIG, ...JSON.parse(data) };
+      const loaded = JSON.parse(data);
+      if (loaded.bodyTemplate) {
+        loaded.bodyTemplate = loaded.bodyTemplate
+          .replace(/I’m\s+(Calista|Calistad)[,\s]+(Sales Manager[^\n]*)/gi, 'I’m {{sender_name}}, {{sender_title}}')
+          .replace(/I’m\s+(Calista|Calistad)/gi, 'I’m {{sender_name}}')
+          .replace(/WhatsApp:\s*\+84\s*816\s*075\s*599/gi, 'WhatsApp: {{sender_phone}}')
+          .replace(/Best regards,\s*\n\s*(Calista|Calistad)\s*\n\s*([^\n]+)/gi, 'Best regards,\n{{sender_name}}\n{{sender_title}}');
+      }
+      return { ...DEFAULT_CONFIG, ...loaded };
     }
   } catch (err) {
     console.error('Lỗi khi đọc file config, sử dụng cấu hình mặc định:', err.message);
@@ -252,20 +261,50 @@ function createTransporter(senderEmail, appPassword) {
   });
 }
 
-let campaignState = {
-  status: 'idle',
-  total: 0,
-  sentCount: 0,
-  failedCount: 0,
-  currentIndex: 0,
-  targets: [],
-  currentDelayCountdown: 0,
-  activeLogs: []
-};
+function loadCampaignState(filePath = CAMPAIGN_STATE_FILE) {
+  try {
+    if (fs.existsSync(filePath)) {
+      const data = fs.readFileSync(filePath, 'utf-8');
+      const loaded = JSON.parse(data);
+      if (loaded && Array.isArray(loaded.targets)) {
+        if (loaded.status === 'running') {
+          loaded.status = 'paused';
+          loaded.currentDelayCountdown = 0;
+        }
+        return loaded;
+      }
+    }
+  } catch (err) {
+    console.error('Lỗi khi đọc file campaign_state:', err.message);
+  }
+  return {
+    status: 'idle',
+    total: 0,
+    sentCount: 0,
+    failedCount: 0,
+    currentIndex: 0,
+    targets: [],
+    currentDelayCountdown: 0,
+    activeLogs: []
+  };
+}
+
+function saveCampaignState(filePath = CAMPAIGN_STATE_FILE) {
+  try {
+    fs.writeFileSync(filePath, JSON.stringify(campaignState, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('Lỗi khi lưu campaign_state:', err.message);
+  }
+}
+
+let campaignState = loadCampaignState();
 
 let sseClients = [];
 
 function broadcastState(eventType = 'update', data = null) {
+  if (['status_change', 'target_update', 'complete'].includes(eventType)) {
+    saveCampaignState();
+  }
   const payload = JSON.stringify({
     event: eventType,
     state: {
@@ -509,7 +548,14 @@ app.post('/api/preview-targets', requirePin, (req, res) => {
   });
 });
 
-// 4. SSE Stream
+// 4. SSE Stream & State API
+app.get('/api/campaign/state', requirePin, (req, res) => {
+  res.json({
+    success: true,
+    state: campaignState
+  });
+});
+
 app.get('/api/campaign/events', requirePin, (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -634,6 +680,22 @@ app.post('/api/campaign/resume', requirePin, (req, res) => {
     campaignState.status = 'running';
     addLog('info', 'Chiến dịch TIẾP TỤC gửi.');
     broadcastState('status_change');
+    saveCampaignState();
+
+    // If server restarted or worker stopped, restart background queue dispatcher
+    if (!campaignWorkerActive) {
+      const cfg = loadConfig();
+      const attachments = getUploadedFiles();
+      runCampaignWorker({
+        cfg,
+        attachments,
+        delayMin: cfg.delayMin || 20,
+        delayMax: cfg.delayMax || 45,
+        subjectTemplate: cfg.subjectTemplate,
+        bodyTemplate: cfg.bodyTemplate
+      });
+    }
+
     return res.json({ success: true, message: 'Đã tiếp tục chiến dịch.' });
   }
   res.status(400).json({ success: false, message: 'Chiến dịch không trong trạng thái tạm dừng.' });
@@ -807,4 +869,6 @@ module.exports.formatEmailHtml = formatEmailHtml;
 module.exports.generateCsvReport = generateCsvReport;
 module.exports.calculateTotalAttachmentSize = calculateTotalAttachmentSize;
 module.exports.getUploadedFiles = getUploadedFiles;
+module.exports.loadCampaignState = loadCampaignState;
+module.exports.saveCampaignState = saveCampaignState;
 module.exports.campaignState = campaignState;
