@@ -4,13 +4,16 @@ const multer = require('multer');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Ensure folders exist
-const UPLOADS_DIR = path.join(__dirname, 'uploads');
-const DATA_DIR = path.join(__dirname, 'data');
+// Handle Serverless environments (like Vercel) where filesystem is read-only except /tmp
+const isServerless = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
+const UPLOADS_DIR = isServerless ? path.join(os.tmpdir(), 'uploads') : path.join(__dirname, 'uploads');
+const DATA_DIR = isServerless ? path.join(os.tmpdir(), 'data') : path.join(__dirname, 'data');
+
 if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
@@ -727,19 +730,18 @@ if (require.main === module) {
   });
 }
 
-module.exports = {
-  app,
-  loadConfig,
-  saveConfig,
-  validateEmail,
-  validateDelayRange,
-  extractCompanyName,
-  parseTargetEmails,
-  escapeHtml,
-  interpolateTemplate,
-  formatEmailHtml,
-  generateCsvReport,
-  calculateTotalAttachmentSize,
-  getUploadedFiles,
-  campaignState
-};
+module.exports = app;
+module.exports.app = app;
+module.exports.loadConfig = loadConfig;
+module.exports.saveConfig = saveConfig;
+module.exports.validateEmail = validateEmail;
+module.exports.validateDelayRange = validateDelayRange;
+module.exports.extractCompanyName = extractCompanyName;
+module.exports.parseTargetEmails = parseTargetEmails;
+module.exports.escapeHtml = escapeHtml;
+module.exports.interpolateTemplate = interpolateTemplate;
+module.exports.formatEmailHtml = formatEmailHtml;
+module.exports.generateCsvReport = generateCsvReport;
+module.exports.calculateTotalAttachmentSize = calculateTotalAttachmentSize;
+module.exports.getUploadedFiles = getUploadedFiles;
+module.exports.campaignState = campaignState;
