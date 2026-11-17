@@ -19,11 +19,24 @@ if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
 const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
 
+// Security: Master Access PIN
+const APP_PIN = process.env.APP_PIN || '66882004';
+
 // Middleware
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
+
+// Security Middleware: Require PIN for all internal APIs except verify-pin
+function requirePin(req, res, next) {
+  // Allow SSE connections with query param or header
+  const pin = req.headers['x-app-pin'] || req.query.pin;
+  if (pin === APP_PIN) {
+    return next();
+  }
+  return res.status(401).json({ success: false, message: 'Yêu cầu mã PIN bảo mật để truy cập dữ liệu!' });
+}
 
 // Default configuration
 const DEFAULT_CONFIG = {
@@ -283,16 +296,27 @@ function addLog(type, message, details = {}) {
 
 // ================= API ENDPOINTS =================
 
-// 1. Config API
-app.get('/api/config', (req, res) => {
+// 0. Auth API: Verify Master Access PIN
+app.post('/api/auth/verify-pin', (req, res) => {
+  const pin = (req.body.pin || '').toString().trim();
+  if (pin === APP_PIN) {
+    return res.json({ success: true, message: 'Xác thực mã PIN thành công!' });
+  }
+  return res.status(401).json({ success: false, message: 'Mã PIN bảo mật không chính xác!' });
+});
+
+// 1. Config API (Protected by PIN & Password Masked)
+app.get('/api/config', requirePin, (req, res) => {
   const cfg = loadConfig();
+  const safeCfg = { ...cfg };
+  delete safeCfg.appPassword; // Bảo mật: Không bao giờ trả mật khẩu thô ra ngoài trình duyệt
   res.json({
-    ...cfg,
+    ...safeCfg,
     hasAppPassword: Boolean(cfg.appPassword)
   });
 });
 
-app.post('/api/config', (req, res) => {
+app.post('/api/config', requirePin, (req, res) => {
   const current = loadConfig();
 
   if (req.body.senderEmail && !validateEmail(req.body.senderEmail)) {
@@ -310,7 +334,7 @@ app.post('/api/config', (req, res) => {
   const updated = {
     ...current,
     senderEmail: req.body.senderEmail !== undefined ? req.body.senderEmail.trim() : current.senderEmail,
-    appPassword: req.body.appPassword !== undefined && req.body.appPassword !== '' ? req.body.appPassword.trim() : current.appPassword,
+    appPassword: (req.body.appPassword && req.body.appPassword.trim()) ? req.body.appPassword.trim() : current.appPassword,
     senderName: req.body.senderName !== undefined ? req.body.senderName.trim() : current.senderName,
     senderTitle: req.body.senderTitle !== undefined ? req.body.senderTitle.trim() : current.senderTitle,
     senderPhone: req.body.senderPhone !== undefined ? req.body.senderPhone.trim() : current.senderPhone,
@@ -328,8 +352,8 @@ app.post('/api/config', (req, res) => {
   }
 });
 
-// Test Gmail SMTP Connection
-app.post('/api/test-connection', async (req, res) => {
+// Test Gmail SMTP Connection (Protected by PIN)
+app.post('/api/test-connection', requirePin, async (req, res) => {
   const cfg = loadConfig();
   const email = (req.body.senderEmail || cfg.senderEmail || '').trim();
   const password = (req.body.appPassword || cfg.appPassword || '').trim();
@@ -358,7 +382,7 @@ app.post('/api/test-connection', async (req, res) => {
 });
 
 // Send Test Email to a specific address with detailed SMTP response
-app.post('/api/send-test-email', async (req, res) => {
+app.post('/api/send-test-email', requirePin, async (req, res) => {
   const cfg = loadConfig();
   const targetEmail = (req.body.targetEmail || '').trim();
   const includeAttachments = req.body.includeAttachments !== false;
@@ -425,7 +449,7 @@ app.post('/api/send-test-email', async (req, res) => {
 });
 
 // 2. Attachments API
-app.get('/api/attachments', (req, res) => {
+app.get('/api/attachments', requirePin, (req, res) => {
   const files = getUploadedFiles();
   const totalBytes = calculateTotalAttachmentSize(files);
   res.json({
@@ -436,7 +460,7 @@ app.get('/api/attachments', (req, res) => {
   });
 });
 
-app.post('/api/attachments', upload.array('files', 10), (req, res) => {
+app.post('/api/attachments', requirePin, upload.array('files', 10), (req, res) => {
   const files = getUploadedFiles();
   const totalBytes = calculateTotalAttachmentSize(files);
 
@@ -461,7 +485,7 @@ app.post('/api/attachments', upload.array('files', 10), (req, res) => {
   });
 });
 
-app.delete('/api/attachments/:filename', (req, res) => {
+app.delete('/api/attachments/:filename', requirePin, (req, res) => {
   const targetName = path.basename(req.params.filename);
   const filePath = path.join(UPLOADS_DIR, targetName);
   if (fs.existsSync(filePath)) {
@@ -476,7 +500,7 @@ app.delete('/api/attachments/:filename', (req, res) => {
 });
 
 // 3. Target Email Parsing API
-app.post('/api/preview-targets', (req, res) => {
+app.post('/api/preview-targets', requirePin, (req, res) => {
   const rawText = req.body.rawText || '';
   const parsed = parseTargetEmails(rawText);
   res.json({
@@ -486,7 +510,7 @@ app.post('/api/preview-targets', (req, res) => {
 });
 
 // 4. SSE Stream
-app.get('/api/campaign/events', (req, res) => {
+app.get('/api/campaign/events', requirePin, (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
@@ -519,7 +543,7 @@ app.get('/api/campaign/events', (req, res) => {
 // 5. Campaign Dispatcher APIs
 let campaignWorkerActive = false;
 
-app.post('/api/campaign/start', async (req, res) => {
+app.post('/api/campaign/start', requirePin, async (req, res) => {
   if (campaignState.status === 'running') {
     return res.status(400).json({ success: false, message: 'Chiến dịch đang chạy, không thể bắt đầu lại!' });
   }
@@ -552,13 +576,26 @@ app.post('/api/campaign/start', async (req, res) => {
     sentCount: 0,
     failedCount: 0,
     currentIndex: 0,
-    targets: targets.map(t => ({
-      email: t.email,
-      companyName: t.companyName || extractCompanyName(t.email),
-      status: 'pending',
-      note: 'Đang chờ gửi...',
-      sentAt: null
-    })),
+    targets: targets.map((t, idx) => {
+      const company = t.companyName || extractCompanyName(t.email);
+      const defaultVars = {
+        company_name: company,
+        sender_name: cfg.senderName,
+        sender_title: cfg.senderTitle,
+        sender_phone: cfg.senderPhone
+      };
+      return {
+        id: t.id || `target-${idx}-${Date.now()}`,
+        email: t.email,
+        companyName: company,
+        subject: t.subject ? t.subject.trim() : interpolateTemplate(subjectTemplate || cfg.subjectTemplate, defaultVars),
+        body: t.body ? t.body : interpolateTemplate(bodyTemplate || cfg.bodyTemplate, defaultVars),
+        attachmentFilenames: Array.isArray(t.attachmentFilenames) ? t.attachmentFilenames : attachments.map(a => a.filename),
+        status: 'pending',
+        note: 'Đang chờ gửi...',
+        sentAt: null
+      };
+    }),
     currentDelayCountdown: 0,
     activeLogs: []
   };
@@ -582,7 +619,7 @@ app.post('/api/campaign/start', async (req, res) => {
   res.json({ success: true, message: 'Chiến dịch đã được khởi động!' });
 });
 
-app.post('/api/campaign/pause', (req, res) => {
+app.post('/api/campaign/pause', requirePin, (req, res) => {
   if (campaignState.status === 'running') {
     campaignState.status = 'paused';
     addLog('warning', 'Chiến dịch đã được TẠM DỪNG.');
@@ -592,7 +629,7 @@ app.post('/api/campaign/pause', (req, res) => {
   res.status(400).json({ success: false, message: 'Chiến dịch không trong trạng thái đang chạy.' });
 });
 
-app.post('/api/campaign/resume', (req, res) => {
+app.post('/api/campaign/resume', requirePin, (req, res) => {
   if (campaignState.status === 'paused') {
     campaignState.status = 'running';
     addLog('info', 'Chiến dịch TIẾP TỤC gửi.');
@@ -602,7 +639,7 @@ app.post('/api/campaign/resume', (req, res) => {
   res.status(400).json({ success: false, message: 'Chiến dịch không trong trạng thái tạm dừng.' });
 });
 
-app.post('/api/campaign/stop', (req, res) => {
+app.post('/api/campaign/stop', requirePin, (req, res) => {
   if (campaignState.status === 'running' || campaignState.status === 'paused') {
     campaignState.status = 'stopped';
     addLog('danger', 'Chiến dịch đã bị NGẮT DỪNG HẲN.');
@@ -612,7 +649,32 @@ app.post('/api/campaign/stop', (req, res) => {
   res.status(400).json({ success: false, message: 'Chiến dịch không hoạt động.' });
 });
 
-app.get('/api/campaign/export-csv', (req, res) => {
+// Update a specific pending target's custom subject, body, or attachments
+app.post('/api/campaign/target/:index/update', requirePin, (req, res) => {
+  const idx = parseInt(req.params.index, 10);
+  if (isNaN(idx) || idx < 0 || !campaignState.targets || idx >= campaignState.targets.length) {
+    return res.status(404).json({ success: false, message: 'Không tìm thấy target tại vị trí này.' });
+  }
+
+  const target = campaignState.targets[idx];
+  if (target.status !== 'pending') {
+    return res.status(400).json({
+      success: false,
+      message: 'Không thể chỉnh sửa target này vì email đang được gửi hoặc đã gửi xong!'
+    });
+  }
+
+  if (req.body.subject !== undefined) target.subject = req.body.subject.trim();
+  if (req.body.body !== undefined) target.body = req.body.body;
+  if (req.body.attachmentFilenames !== undefined && Array.isArray(req.body.attachmentFilenames)) {
+    target.attachmentFilenames = req.body.attachmentFilenames;
+  }
+
+  broadcastState('target_update', { index: idx, target });
+  res.json({ success: true, message: 'Đã cập nhật nội dung riêng cho target thành công!', target });
+});
+
+app.get('/api/campaign/export-csv', requirePin, (req, res) => {
   if (!campaignState.targets || campaignState.targets.length === 0) {
     return res.status(400).send('Không có dữ liệu chiến dịch để xuất.');
   }
@@ -648,19 +710,20 @@ async function runCampaignWorker({ cfg, attachments, delayMin, delayMax, subject
       const target = campaignState.targets[idx];
       target.status = 'sending';
       target.note = 'Đang gửi...';
-      broadcastState('target_update', target);
+      broadcastState('target_update', { index: idx, target });
 
       const company = target.companyName;
-      const vars = {
-        company_name: company,
-        sender_name: cfg.senderName,
-        sender_title: cfg.senderTitle,
-        sender_phone: cfg.senderPhone
-      };
-
-      const personalizedSubject = interpolateTemplate(subjectTemplate, vars);
-      const personalizedBody = interpolateTemplate(bodyTemplate, vars);
+      const personalizedSubject = target.subject;
+      const personalizedBody = target.body;
       const htmlBody = formatEmailHtml(personalizedBody);
+
+      // Determine attachments for this specific target
+      const targetAttachments = (target.attachmentFilenames && Array.isArray(target.attachmentFilenames))
+        ? attachments.filter(a => target.attachmentFilenames.includes(a.filename)).map(att => ({
+            filename: att.originalName,
+            path: att.path
+          }))
+        : mailAttachments;
 
       try {
         const info = await transporter.sendMail({
@@ -669,7 +732,7 @@ async function runCampaignWorker({ cfg, attachments, delayMin, delayMax, subject
           subject: personalizedSubject,
           text: personalizedBody,
           html: `<div style="font-family: Arial, sans-serif; font-size: 15px; color: #222; max-width: 650px; line-height: 1.6;">${htmlBody}</div>`,
-          attachments: mailAttachments
+          attachments: targetAttachments
         });
 
         target.status = 'success';
@@ -693,7 +756,7 @@ async function runCampaignWorker({ cfg, attachments, delayMin, delayMax, subject
       }
 
       campaignState.currentIndex++;
-      broadcastState('target_update', target);
+      broadcastState('target_update', { index: idx, target });
 
       if (campaignState.currentIndex < campaignState.targets.length && campaignState.status === 'running') {
         const delaySeconds = Math.floor(Math.random() * (delayMax - delayMin + 1)) + delayMin;

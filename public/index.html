@@ -8,6 +8,37 @@
 </head>
 <body>
 
+  <!-- RETRO PIN SECURITY LOCK SCREEN (OVERLAY) -->
+  <div id="pinLockOverlay">
+    <div class="pin-modal-card">
+      <div class="window-titlebar">
+        <div class="window-title">
+          <svg class="bw-icon" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+            <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+          </svg>
+          <span>BẢO MẬT HỆ THỐNG - MÃ PIN TRUY CẬP</span>
+        </div>
+      </div>
+      <div class="pin-modal-body">
+        <div style="font-weight: 800; font-size: 1.15rem; color: var(--pink-primary); margin-bottom: 6px;">
+          BẢNG ĐIỀU KHIỂN ĐÃ ĐƯỢC KHÓA BẢO VỆ
+        </div>
+        <p style="font-size: 0.88rem; color: #555; line-height: 1.5;">
+          Vui lòng nhập Mã PIN bảo mật (8 chữ số) để truy cập hòm thư và dữ liệu chiến dịch:
+        </p>
+        
+        <form id="pinUnlockForm" onsubmit="event.preventDefault(); submitPinUnlock();">
+          <input type="password" id="inputPinCode" class="pin-input" maxlength="8" placeholder="● ● ● ● ● ● ● ●" autocomplete="off" autofocus>
+          <div id="pinErrorMsg" class="pin-error-msg">Mã PIN không chính xác! Vui lòng thử lại.</div>
+          <button type="submit" id="btnSubmitPin" class="retro-btn" style="width: 100%; padding: 12px; font-size: 1rem;">
+            MỞ KHÓA BẢNG ĐIỀU KHIỂN (ENTER)
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+
   <!-- RETRO MAIN CONTAINER -->
   <div class="window-container">
     
@@ -37,6 +68,13 @@
         <div id="connectionStatusBadge" class="retro-badge pink">Chưa kết nối Gmail</div>
         <div id="campaignStatusBadge" class="retro-badge">SẴN SÀNG</div>
         <div class="retro-badge yellow">Sales Manager: Calista</div>
+        <button id="btnLockApp" class="retro-btn secondary" style="padding: 4px 10px; font-size: 0.8rem;" title="Khóa màn hình làm việc">
+          <svg class="bw-icon" style="width:14px; height:14px;" viewBox="0 0 24 24" fill="none" stroke="#111111" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+            <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+          </svg>
+          Khóa App
+        </button>
       </div>
     </div>
 
@@ -409,6 +447,27 @@
           <div class="retro-badge green">Thành công: <strong id="statSent">0</strong></div>
           <div class="retro-badge pink">Thất bại: <strong id="statFailed">0</strong></div>
           <div class="retro-badge yellow">Tổng cộng: <strong id="statTotal">0</strong></div>
+        </div>
+      </div>
+
+      <!-- TARGET CARDS (INTERACTIVE DISPATCH CARDS) -->
+      <div class="retro-card pink-tint">
+        <div class="card-title">
+          <span>DANH SÁCH TARGET CARDS (TÙY CHỈNH RIÊNG & THEO DÕI TRẠNG THÁI)</span>
+          <div style="display:flex; gap:8px;">
+            <button id="btnExpandAllCards" class="retro-btn secondary" style="padding:4px 10px; font-size:0.8rem;">Mở rộng tất cả</button>
+            <button id="btnCollapseAllCards" class="retro-btn secondary" style="padding:4px 10px; font-size:0.8rem;">Thu gọn tất cả</button>
+          </div>
+        </div>
+
+        <p style="font-size:0.88rem; color:#444; margin-bottom: 12px;">
+          Mỗi Card đại diện cho 1 đối tác mục tiêu. Bạn có thể <strong>chỉnh sửa riêng Tiêu đề, Nội dung thư hoặc gỡ bớt file đính kèm</strong> cho từng đối tác. Khi thư chuyển sang trạng thái <em>Đang gửi...</em> hoặc <em>Đã gửi</em>, thẻ sẽ tự động khóa chỉnh sửa (Disabled) và cập nhật trạng thái thời gian thực.
+        </p>
+
+        <div id="targetCardsContainer" class="target-cards-grid">
+          <div style="text-align: center; padding: 30px 20px; color: #777; font-size: 0.9rem; border: 2px dashed #ffb3c6; border-radius: 8px; background: #fff;">
+            Chưa có danh sách đối tác. Vui lòng sang <strong>Tab 3: Target & Bóc Tách Tên</strong> để dán danh sách email và bấm "Bóc Tách & Xem Trước".
+          </div>
         </div>
       </div>
 

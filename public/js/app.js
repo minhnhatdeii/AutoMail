@@ -1,10 +1,35 @@
 // ================================================================
 // RETRO PINK EMAIL OUTREACH - FRONTEND APP CONTROLLER
 // Typography: Google Sans | Icons: Monochrome B&W Only
+// Security: Master Access PIN 66882004 & App Password Masking
 // ================================================================
 
+let userPin = sessionStorage.getItem('vinhcuu_app_pin') || '';
+let currentTargets = [];
+let availableAttachments = [];
+let campaignActive = false;
+let eventSource = null;
+
+// Secure API Fetch Wrapper
+async function apiFetch(url, options = {}) {
+  options.headers = options.headers || {};
+  if (options.headers instanceof Headers) {
+    options.headers.set('x-app-pin', userPin);
+  } else {
+    options.headers['x-app-pin'] = userPin;
+  }
+
+  const res = await fetch(url, options);
+  if (res.status === 401 && !url.includes('/api/auth/verify-pin')) {
+    lockAppUI();
+    showToast('Phiên làm việc đã hết hạn hoặc mã PIN chưa chính xác!', 'error');
+  }
+  return res;
+}
+
 document.addEventListener('DOMContentLoaded', () => {
-  // Navigation Tabs
+  // Navigation Tabs & Smooth Horizontal Mouse Wheel Scroll
+  const tabNav = document.querySelector('.tab-navigation');
   const tabBtns = document.querySelectorAll('.tab-btn');
   const tabPanes = document.querySelectorAll('.tab-pane');
 
@@ -16,19 +41,111 @@ document.addEventListener('DOMContentLoaded', () => {
       btn.classList.add('active');
       const targetPane = document.getElementById(targetId);
       if (targetPane) targetPane.classList.add('active');
+      btn.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
     });
   });
 
-  // Init App
+  if (tabNav) {
+    tabNav.addEventListener('wheel', (e) => {
+      if (e.deltaY !== 0 || e.deltaX !== 0) {
+        e.preventDefault();
+        tabNav.scrollLeft += (e.deltaY !== 0 ? e.deltaY : e.deltaX);
+      }
+    }, { passive: false });
+  }
+
+  initEventListeners();
+  checkPinAuthOnLoad();
+});
+
+// Security: Check PIN auth on startup
+async function checkPinAuthOnLoad() {
+  if (userPin) {
+    try {
+      const res = await fetch('/api/auth/verify-pin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pin: userPin })
+      });
+      const data = await res.json();
+      if (data.success) {
+        unlockAppUI();
+        return;
+      }
+    } catch (e) {}
+  }
+  lockAppUI();
+}
+
+async function submitPinUnlock() {
+  const pinInput = document.getElementById('inputPinCode');
+  const errorMsg = document.getElementById('pinErrorMsg');
+  const btn = document.getElementById('btnSubmitPin');
+  const pin = (pinInput.value || '').trim();
+
+  if (!pin) {
+    pinInput.focus();
+    return;
+  }
+
+  btn.disabled = true;
+  btn.innerText = 'Đang xác thực...';
+  errorMsg.style.display = 'none';
+
+  try {
+    const res = await fetch('/api/auth/verify-pin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pin })
+    });
+    const result = await res.json();
+
+    if (result.success) {
+      userPin = pin;
+      sessionStorage.setItem('vinhcuu_app_pin', userPin);
+      unlockAppUI();
+      showToast('Xác thực mã PIN bảo mật thành công!', 'success');
+    } else {
+      errorMsg.innerText = result.message || 'Mã PIN bảo mật không chính xác!';
+      errorMsg.style.display = 'block';
+      pinInput.value = '';
+      pinInput.focus();
+    }
+  } catch (err) {
+    errorMsg.innerText = 'Lỗi kết nối máy chủ khi kiểm tra mã PIN!';
+    errorMsg.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    btn.innerText = 'MỞ KHÓA BẢNG ĐIỀU KHIỂN (ENTER)';
+  }
+}
+
+function unlockAppUI() {
+  const overlay = document.getElementById('pinLockOverlay');
+  if (overlay) overlay.style.display = 'none';
+  // Load app data
   loadConfig();
   loadAttachments();
   initSSE();
-  initEventListeners();
-});
+}
 
-// Global state
-let currentTargets = [];
-let campaignActive = false;
+function lockAppUI() {
+  userPin = '';
+  sessionStorage.removeItem('vinhcuu_app_pin');
+  const overlay = document.getElementById('pinLockOverlay');
+  if (overlay) {
+    overlay.style.display = 'flex';
+    const pinInput = document.getElementById('inputPinCode');
+    if (pinInput) {
+      pinInput.value = '';
+      pinInput.focus();
+    }
+  }
+  if (eventSource) {
+    eventSource.close();
+    eventSource = null;
+  }
+}
 
 // Toast Helper (Monochrome indicator)
 function showToast(message, type = 'info') {
@@ -47,11 +164,14 @@ function showToast(message, type = 'info') {
 // ================= 1. CONFIGURATION =================
 async function loadConfig() {
   try {
-    const res = await fetch('/api/config');
+    const res = await apiFetch('/api/config');
     const data = await res.json();
     document.getElementById('senderEmail').value = data.senderEmail || '';
     if (data.hasAppPassword) {
-      document.getElementById('appPassword').placeholder = '●●●●●●●●●●●●●●●● (Đã lưu mật khẩu)';
+      document.getElementById('appPassword').value = '';
+      document.getElementById('appPassword').placeholder = '●●●●●●●●●●●●●●●● (Mật khẩu được lưu bảo mật)';
+    } else {
+      document.getElementById('appPassword').placeholder = 'ví dụ: abcd efgh ijkl mnop';
     }
     document.getElementById('senderName').value = data.senderName || 'Calista';
     document.getElementById('senderTitle').value = data.senderTitle || 'Sales Manager | Vinh Cuu Stone';
@@ -79,14 +199,15 @@ async function saveConfig() {
   };
 
   try {
-    const res = await fetch('/api/config', {
+    const res = await apiFetch('/api/config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
     const result = await res.json();
     if (result.success) {
-      showToast('Đã lưu cấu hình thành công!', 'success');
+      showToast('Đã lưu cấu hình an toàn thành công!', 'success');
+      loadConfig(); // Reload to refresh placeholder
     } else {
       showToast(result.message || 'Lỗi khi lưu cấu hình', 'error');
     }
@@ -105,7 +226,7 @@ async function testConnection() {
   const appPassword = document.getElementById('appPassword').value.trim();
 
   try {
-    const res = await fetch('/api/test-connection', {
+    const res = await apiFetch('/api/test-connection', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ senderEmail, appPassword })
@@ -148,7 +269,7 @@ async function sendTestEmail() {
   resultBox.style.display = 'none';
 
   try {
-    const res = await fetch('/api/send-test-email', {
+    const res = await apiFetch('/api/send-test-email', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ targetEmail, includeAttachments })
@@ -190,7 +311,7 @@ async function sendTestEmail() {
 // ================= 2. FILE ATTACHMENTS =================
 async function loadAttachments() {
   try {
-    const res = await fetch('/api/attachments');
+    const res = await apiFetch('/api/attachments');
     const data = await res.json();
     renderAttachments(data);
   } catch (err) {
@@ -199,6 +320,7 @@ async function loadAttachments() {
 }
 
 function renderAttachments(data) {
+  availableAttachments = data.files || [];
   const listEl = document.getElementById('attachmentList');
   const fillEl = document.getElementById('meterBarFill');
   const sizeTextEl = document.getElementById('meterSizeText');
@@ -252,7 +374,7 @@ async function uploadFiles(files) {
 
   try {
     showToast('Đang tải file lên máy chủ...', 'info');
-    const res = await fetch('/api/attachments', {
+    const res = await apiFetch('/api/attachments', {
       method: 'POST',
       body: formData
     });
@@ -271,7 +393,7 @@ async function uploadFiles(files) {
 async function deleteAttachment(filename) {
   if (!confirm('Bạn có chắc chắn muốn xóa file đính kèm này?')) return;
   try {
-    const res = await fetch(`/api/attachments/${encodeURIComponent(filename)}`, {
+    const res = await apiFetch(`/api/attachments/${encodeURIComponent(filename)}`, {
       method: 'DELETE'
     });
     const result = await res.json();
@@ -286,6 +408,15 @@ async function deleteAttachment(filename) {
   }
 }
 
+function interpolateClientTemplate(template, vars = {}) {
+  if (!template) return '';
+  return template
+    .replace(/{{company_name}}/g, vars.company_name !== undefined ? vars.company_name : 'Valued Partner')
+    .replace(/{{sender_name}}/g, vars.sender_name !== undefined ? vars.sender_name : '')
+    .replace(/{{sender_title}}/g, vars.sender_title !== undefined ? vars.sender_title : '')
+    .replace(/{{sender_phone}}/g, vars.sender_phone !== undefined ? vars.sender_phone : '');
+}
+
 // ================= 3. TARGET EMAILS & PREVIEW =================
 async function previewTargets() {
   const rawText = document.getElementById('targetEmailInput').value;
@@ -295,14 +426,43 @@ async function previewTargets() {
   }
 
   try {
-    const res = await fetch('/api/preview-targets', {
+    const res = await apiFetch('/api/preview-targets', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ rawText })
     });
     const data = await res.json();
-    currentTargets = data.targets;
+
+    const subjectTpl = document.getElementById('subjectTemplate').value;
+    const bodyTpl = document.getElementById('bodyTemplate').value;
+    const senderName = document.getElementById('senderName').value;
+    const senderTitle = document.getElementById('senderTitle').value;
+    const senderPhone = document.getElementById('senderPhone').value;
+
+    currentTargets = data.targets.map((t, idx) => {
+      const company = t.companyName || 'Valued Partner';
+      const defaultVars = {
+        company_name: company,
+        sender_name: senderName,
+        sender_title: senderTitle,
+        sender_phone: senderPhone
+      };
+      return {
+        id: `target-${idx}-${Date.now()}`,
+        email: t.email,
+        companyName: company,
+        subject: interpolateClientTemplate(subjectTpl, defaultVars),
+        body: interpolateClientTemplate(bodyTpl, defaultVars),
+        attachmentFilenames: availableAttachments.map(f => f.filename),
+        status: 'pending',
+        note: 'Đang chờ gửi...',
+        isCollapsed: false
+      };
+    });
+
     renderTargetTable(currentTargets);
+    renderTargetCards(currentTargets);
+
     document.getElementById('targetCountBadge').innerText = `${data.total} Đối tác hợp lệ`;
     showToast(`Đã bóc tách thành công ${data.total} email mục tiêu!`, 'success');
   } catch (err) {
@@ -339,6 +499,227 @@ function renderTargetTable(targets) {
   });
 }
 
+// ================= RENDER INTERACTIVE TARGET CARDS =================
+function renderTargetCards(targets) {
+  const container = document.getElementById('targetCardsContainer');
+  if (!container) return;
+
+  if (!targets || targets.length === 0) {
+    container.innerHTML = `
+      <div style="text-align: center; padding: 30px 20px; color: #777; font-size: 0.9rem; border: 2px dashed #ffb3c6; border-radius: 8px; background: #fff;">
+        Chưa có danh sách đối tác. Vui lòng sang <strong>Tab 3: Target & Bóc Tách Tên</strong> để dán danh sách email và bấm "Bóc Tách & Xem Trước".
+      </div>
+    `;
+    return;
+  }
+
+  container.innerHTML = '';
+
+  targets.forEach((t, idx) => {
+    const isDisabled = (t.status !== 'pending');
+    const cardEl = document.createElement('div');
+    cardEl.id = `target-card-${idx}`;
+    cardEl.className = `target-card status-${t.status} ${isDisabled ? 'is-disabled' : ''}`;
+
+    const statusBadgeText = getStatusBadgeText(t.status);
+    const chipsHtml = renderTargetAttachmentChips(idx, t.attachmentFilenames, isDisabled);
+
+    cardEl.innerHTML = `
+      <div class="target-card-header" onclick="toggleCardCollapse(${idx})">
+        <div class="target-card-info">
+          <span class="target-card-index">#${idx + 1}</span>
+          <span class="target-card-email">${escapeHtml(t.email)}</span>
+          <span class="target-card-company">(Dear ${escapeHtml(t.companyName)} team,)</span>
+        </div>
+        <div class="target-card-actions" onclick="event.stopPropagation()">
+          <span id="card-badge-${idx}" class="badge-status badge-${t.status}">${statusBadgeText}</span>
+          <button type="button" class="retro-btn secondary" style="padding: 3px 8px; font-size: 0.75rem;" onclick="toggleCardCollapse(${idx})">
+            <span id="card-toggle-text-${idx}">${t.isCollapsed ? 'Mở rộng' : 'Thu gọn'}</span>
+          </button>
+        </div>
+      </div>
+
+      <div id="card-body-${idx}" class="target-card-body ${t.isCollapsed ? 'collapsed' : ''}">
+        <div class="card-field">
+          <label>
+            <span>Tiêu đề Email (Subject):</span>
+            ${isDisabled ? '<span style="color:#d50000; font-size:0.75rem; font-weight:600;">[Đã khóa - Đang gửi hoặc đã gửi xong]</span>' : '<span style="color:#666; font-size:0.75rem;">(Có thể gõ chỉnh sửa riêng)</span>'}
+          </label>
+          <input type="text" class="card-input" id="card-input-subject-${idx}" value="${escapeHtml(t.subject)}" ${isDisabled ? 'disabled' : ''} oninput="updateTargetSubject(${idx}, this.value)">
+        </div>
+
+        <div class="card-field">
+          <label>
+            <span>Nội dung Thư Chào Hàng (Body):</span>
+            ${isDisabled ? '<span style="color:#d50000; font-size:0.75rem; font-weight:600;">[Đã khóa]</span>' : '<span style="color:#666; font-size:0.75rem;">(Có thể gõ thêm lời nhắn riêng cho khách này)</span>'}
+          </label>
+          <textarea class="card-textarea" id="card-input-body-${idx}" ${isDisabled ? 'disabled' : ''} oninput="updateTargetBody(${idx}, this.value)">${escapeHtml(t.body)}</textarea>
+        </div>
+
+        <div class="card-field">
+          <label>
+            <span>File đính kèm riêng cho đối tác này:</span>
+            ${!isDisabled ? '<span style="color:#666; font-size:0.75rem;">(Bấm [✕] để gỡ bớt file riêng cho khách này)</span>' : ''}
+          </label>
+          <div id="card-attachments-${idx}" class="card-attachments-container">
+            ${chipsHtml}
+          </div>
+        </div>
+
+        <div id="card-note-${idx}" class="card-note-box ${t.status}" style="${t.note && t.status !== 'pending' ? 'display:block;' : 'display:none;'}">
+          <strong>Trạng thái:</strong> <span id="card-note-text-${idx}">${escapeHtml(t.note || '')}</span>
+        </div>
+      </div>
+    `;
+
+    container.appendChild(cardEl);
+  });
+}
+
+function getStatusBadgeText(status) {
+  if (status === 'success') return 'Đã gửi thành công';
+  if (status === 'failed') return 'Gửi lỗi';
+  if (status === 'sending') return 'Đang gửi...';
+  return 'Chờ gửi';
+}
+
+function renderTargetAttachmentChips(idx, filenames, isDisabled) {
+  if (!filenames || filenames.length === 0) {
+    return '<span style="font-size:0.8rem; color:#888;">(Không có file đính kèm nào cho đối tác này)</span>';
+  }
+
+  const chips = [];
+  filenames.forEach(fn => {
+    const fileObj = availableAttachments.find(a => a.filename === fn) || { originalName: fn, sizeFormatted: '' };
+    chips.push(`
+      <span class="card-attachment-chip">
+        <svg class="bw-icon" style="width:14px; height:14px;" viewBox="0 0 24 24" fill="none" stroke="#111111" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
+        </svg>
+        <span>${escapeHtml(fileObj.originalName)}</span>
+        ${fileObj.sizeFormatted ? `<span style="color:#666; font-size:0.72rem;">(${fileObj.sizeFormatted})</span>` : ''}
+        ${!isDisabled ? `<button type="button" class="btn-remove-chip" title="Gỡ file này khỏi email gửi cho khách này" onclick="removeAttachmentFromTarget(${idx}, '${escapeHtml(fn)}')">✕</button>` : ''}
+      </span>
+    `);
+  });
+
+  return chips.join('');
+}
+
+function updateTargetSubject(idx, value) {
+  if (currentTargets[idx] && currentTargets[idx].status === 'pending') {
+    currentTargets[idx].subject = value;
+    syncTargetUpdateToServer(idx);
+  }
+}
+
+function updateTargetBody(idx, value) {
+  if (currentTargets[idx] && currentTargets[idx].status === 'pending') {
+    currentTargets[idx].body = value;
+    syncTargetUpdateToServer(idx);
+  }
+}
+
+function removeAttachmentFromTarget(idx, filename) {
+  if (!currentTargets[idx] || currentTargets[idx].status !== 'pending') return;
+  currentTargets[idx].attachmentFilenames = currentTargets[idx].attachmentFilenames.filter(f => f !== filename);
+  const container = document.getElementById(`card-attachments-${idx}`);
+  if (container) {
+    container.innerHTML = renderTargetAttachmentChips(idx, currentTargets[idx].attachmentFilenames, false);
+  }
+  syncTargetUpdateToServer(idx);
+  showToast(`Đã gỡ file khỏi email gửi cho [${currentTargets[idx].email}]`, 'info');
+}
+
+let syncTimeouts = {};
+function syncTargetUpdateToServer(idx) {
+  if (!currentTargets[idx]) return;
+  if (syncTimeouts[idx]) clearTimeout(syncTimeouts[idx]);
+  syncTimeouts[idx] = setTimeout(async () => {
+    try {
+      await apiFetch(`/api/campaign/target/${idx}/update`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          subject: currentTargets[idx].subject,
+          body: currentTargets[idx].body,
+          attachmentFilenames: currentTargets[idx].attachmentFilenames
+        })
+      });
+    } catch (e) {
+      // Bỏ qua nếu chiến dịch chưa khởi động trên server
+    }
+  }, 400);
+}
+
+function toggleCardCollapse(idx) {
+  if (!currentTargets[idx]) return;
+  currentTargets[idx].isCollapsed = !currentTargets[idx].isCollapsed;
+  const bodyEl = document.getElementById(`card-body-${idx}`);
+  const toggleText = document.getElementById(`card-toggle-text-${idx}`);
+  if (bodyEl) {
+    if (currentTargets[idx].isCollapsed) {
+      bodyEl.classList.add('collapsed');
+      if (toggleText) toggleText.innerText = 'Mở rộng';
+    } else {
+      bodyEl.classList.remove('collapsed');
+      if (toggleText) toggleText.innerText = 'Thu gọn';
+    }
+  }
+}
+
+function expandAllCards() {
+  currentTargets.forEach((t, idx) => {
+    t.isCollapsed = false;
+    const bodyEl = document.getElementById(`card-body-${idx}`);
+    const toggleText = document.getElementById(`card-toggle-text-${idx}`);
+    if (bodyEl) bodyEl.classList.remove('collapsed');
+    if (toggleText) toggleText.innerText = 'Thu gọn';
+  });
+}
+
+function collapseAllCards() {
+  currentTargets.forEach((t, idx) => {
+    t.isCollapsed = true;
+    const bodyEl = document.getElementById(`card-body-${idx}`);
+    const toggleText = document.getElementById(`card-toggle-text-${idx}`);
+    if (bodyEl) bodyEl.classList.add('collapsed');
+    if (toggleText) toggleText.innerText = 'Mở rộng';
+  });
+}
+
+function updateCardStatusDOM(idx, target) {
+  const cardEl = document.getElementById(`target-card-${idx}`);
+  const badgeEl = document.getElementById(`card-badge-${idx}`);
+  const subjectInput = document.getElementById(`card-input-subject-${idx}`);
+  const bodyTextarea = document.getElementById(`card-input-body-${idx}`);
+  const noteBox = document.getElementById(`card-note-${idx}`);
+  const noteText = document.getElementById(`card-note-text-${idx}`);
+
+  if (!cardEl) return;
+
+  const isDisabled = (target.status !== 'pending');
+  cardEl.className = `target-card status-${target.status} ${isDisabled ? 'is-disabled' : ''}`;
+
+  if (badgeEl) {
+    badgeEl.className = `badge-status badge-${target.status}`;
+    badgeEl.innerText = getStatusBadgeText(target.status);
+  }
+
+  if (isDisabled) {
+    if (subjectInput) subjectInput.disabled = true;
+    if (bodyTextarea) bodyTextarea.disabled = true;
+    // Hide all remove attachment buttons
+    cardEl.querySelectorAll('.btn-remove-chip').forEach(btn => btn.style.display = 'none');
+  }
+
+  if (noteBox && noteText) {
+    noteText.innerText = target.note || '';
+    noteBox.className = `card-note-box ${target.status}`;
+    noteBox.style.display = (target.note && target.status !== 'pending') ? 'block' : 'none';
+  }
+}
+
 function updateLivePreviewSample() {
   if (currentTargets.length === 0) {
     showToast('Vui lòng bóc tách danh sách email trước để xem thử!', 'error');
@@ -360,7 +741,11 @@ function updateLivePreviewSample() {
 
 // ================= 4. CAMPAIGN EXECUTION & SSE =================
 function initSSE() {
-  const eventSource = new EventSource('/api/campaign/events');
+  if (eventSource) {
+    eventSource.close();
+    eventSource = null;
+  }
+  eventSource = new EventSource(`/api/campaign/events?pin=${encodeURIComponent(userPin)}`);
 
   eventSource.onmessage = (event) => {
     try {
@@ -438,9 +823,10 @@ function handleServerEvent(payload) {
     btnStop.style.display = 'none';
   }
 
-  // Update target table statuses
+  // Update target table & target cards statuses
   if (state.targets && state.targets.length > 0) {
     state.targets.forEach((t, idx) => {
+      // 1. Update Table Row
       const badge = document.getElementById(`target-status-${idx}`);
       if (badge) {
         if (t.status === 'success') {
@@ -454,7 +840,28 @@ function handleServerEvent(payload) {
           badge.innerText = 'Đang gửi...';
         }
       }
+
+      // 2. Update Interactive Card DOM
+      if (currentTargets[idx]) {
+        currentTargets[idx].status = t.status;
+        currentTargets[idx].note = t.note;
+        currentTargets[idx].sentAt = t.sentAt;
+      }
+      updateCardStatusDOM(idx, t);
     });
+  }
+
+  // Handle single target update event
+  if (event === 'target_update' && payload.data) {
+    const { index, target } = payload.data;
+    if (index !== undefined && target) {
+      if (currentTargets[index]) {
+        currentTargets[index].status = target.status;
+        currentTargets[index].note = target.note;
+        currentTargets[index].sentAt = target.sentAt;
+      }
+      updateCardStatusDOM(index, target);
+    }
   }
 
   // Logs
@@ -489,7 +896,7 @@ async function startCampaign() {
   const bodyTemplate = document.getElementById('bodyTemplate').value;
 
   try {
-    const res = await fetch('/api/campaign/start', {
+    const res = await apiFetch('/api/campaign/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -514,7 +921,7 @@ async function startCampaign() {
 
 async function pauseCampaign() {
   try {
-    const res = await fetch('/api/campaign/pause', { method: 'POST' });
+    const res = await apiFetch('/api/campaign/pause', { method: 'POST' });
     const result = await res.json();
     showToast(result.message, result.success ? 'info' : 'error');
   } catch (err) {
@@ -524,7 +931,7 @@ async function pauseCampaign() {
 
 async function resumeCampaign() {
   try {
-    const res = await fetch('/api/campaign/resume', { method: 'POST' });
+    const res = await apiFetch('/api/campaign/resume', { method: 'POST' });
     const result = await res.json();
     showToast(result.message, result.success ? 'info' : 'error');
   } catch (err) {
@@ -535,7 +942,7 @@ async function resumeCampaign() {
 async function stopCampaign() {
   if (!confirm('Bạn có chắc chắn muốn DỪNG HẲN chiến dịch này? Những email chưa gửi sẽ bị hủy.')) return;
   try {
-    const res = await fetch('/api/campaign/stop', { method: 'POST' });
+    const res = await apiFetch('/api/campaign/stop', { method: 'POST' });
     const result = await res.json();
     showToast(result.message, result.success ? 'info' : 'error');
   } catch (err) {
@@ -544,7 +951,7 @@ async function stopCampaign() {
 }
 
 function exportCsvReport() {
-  window.location.href = '/api/campaign/export-csv';
+  window.location.href = `/api/campaign/export-csv?pin=${encodeURIComponent(userPin)}`;
 }
 
 // ================= EVENT LISTENERS =================
@@ -553,6 +960,11 @@ function initEventListeners() {
   document.getElementById('btnTestConnection').addEventListener('click', testConnection);
   document.getElementById('btnSendTestEmail').addEventListener('click', sendTestEmail);
   document.getElementById('btnSaveTemplate').addEventListener('click', saveConfig);
+
+  const btnLock = document.getElementById('btnLockApp');
+  if (btnLock) {
+    btnLock.addEventListener('click', lockAppUI);
+  }
 
   const fileInput = document.getElementById('fileUploadInput');
   const dropzone = document.getElementById('uploadDropzone');
@@ -579,6 +991,11 @@ function initEventListeners() {
   document.getElementById('btnResumeCampaign').addEventListener('click', resumeCampaign);
   document.getElementById('btnStopCampaign').addEventListener('click', stopCampaign);
   document.getElementById('btnExportCsv').addEventListener('click', exportCsvReport);
+
+  const btnExpandAll = document.getElementById('btnExpandAllCards');
+  if (btnExpandAll) btnExpandAll.addEventListener('click', expandAllCards);
+  const btnCollapseAll = document.getElementById('btnCollapseAllCards');
+  if (btnCollapseAll) btnCollapseAll.addEventListener('click', collapseAllCards);
 
   document.getElementById('btnCloseModal').addEventListener('click', () => {
     document.getElementById('previewModal').style.display = 'none';
