@@ -66,12 +66,18 @@ function loadConfig(filePath = CONFIG_FILE) {
           .replace(/WhatsApp:\s*\+84\s*816\s*075\s*599/gi, 'WhatsApp: {{sender_phone}}')
           .replace(/Best regards,\s*\n\s*(Calista|Calistad)\s*\n\s*([^\n]+)/gi, 'Best regards,\n{{sender_name}}\n{{sender_title}}');
       }
-      return { ...DEFAULT_CONFIG, ...loaded };
+      const merged = { ...DEFAULT_CONFIG, ...loaded };
+      if (process.env.SENDER_EMAIL && !loaded.senderEmail) merged.senderEmail = process.env.SENDER_EMAIL.trim();
+      if (process.env.APP_PASSWORD && !loaded.appPassword) merged.appPassword = process.env.APP_PASSWORD.trim();
+      return merged;
     }
   } catch (err) {
     console.error('Lỗi khi đọc file config, sử dụng cấu hình mặc định:', err.message);
   }
-  return { ...DEFAULT_CONFIG };
+  const merged = { ...DEFAULT_CONFIG };
+  if (process.env.SENDER_EMAIL) merged.senderEmail = process.env.SENDER_EMAIL.trim();
+  if (process.env.APP_PASSWORD) merged.appPassword = process.env.APP_PASSWORD.trim();
+  return merged;
 }
 
 function saveConfig(cfg, filePath = CONFIG_FILE) {
