@@ -1,0 +1,12 @@
+{
+  "senderEmail": "your-email@gmail.com",
+  "appPassword": "",
+  "senderName": "Sales Representative",
+  "senderTitle": "Sales Manager",
+  "senderPhone": "+84 000 000 000",
+  "subjectTemplate": "Vietnam Natural Stone Supplier",
+  "bodyTemplate": "Dear {{company_name}} team,\n\nI’m {{sender_name}}, {{sender_title}}...",
+  "delayMin": 20,
+  "delayMax": 45
+}
+

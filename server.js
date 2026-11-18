@@ -253,11 +253,17 @@ function calculateTotalAttachmentSize(files) {
 
 function createTransporter(senderEmail, appPassword) {
   return nodemailer.createTransport({
-    service: 'gmail',
+    host: 'smtp.gmail.com',
+    port: 465,
+    secure: true,
     auth: {
       user: (senderEmail || '').trim(),
       pass: (appPassword || '').replace(/\s+/g, '')
-    }
+    },
+    family: 4, // Buộc dùng IPv4 để loại bỏ hoàn toàn lỗi treo mạng IPv6 trên Windows/nhà mạng VN
+    connectionTimeout: 15000, // Timeout kết nối 15s tránh treo vô tận
+    greetingTimeout: 15000,
+    socketTimeout: 20000
   });
 }
 
@@ -413,8 +419,10 @@ app.post('/api/test-connection', requirePin, async (req, res) => {
     return res.json({ success: true, message: 'Kết nối tài khoản Gmail thành công!' });
   } catch (err) {
     let msg = 'Kết nối thất bại: ' + (err.message || 'Sai thông tin đăng nhập.');
-    if (err.message && err.message.includes('Invalid login')) {
-      msg = 'Đăng nhập không thành công. Hãy chắc chắn bạn dùng "Mật khẩu ứng dụng" Google 16 ký tự, không phải mật khẩu tài khoản chính.';
+    if (err.message && (err.message.includes('Invalid login') || err.code === 'EAUTH')) {
+      msg = 'Xác thực thất bại (535 Bad Credentials): Mật khẩu ứng dụng không đúng hoặc đã bị Google vô hiệu hóa. Vui lòng tạo Mật khẩu ứng dụng mới (16 ký tự) tại myaccount.google.com/apppasswords.';
+    } else if (err.code === 'ETIMEDOUT' || err.code === 'ESOCKETTIMEDOUT' || (err.message && err.message.toLowerCase().includes('timeout'))) {
+      msg = 'Hết thời gian chờ kết nối (Timeout): Máy chủ Google không phản hồi. Vui lòng kiểm tra lại đường truyền mạng Wi-Fi hoặc tường lửa của máy tính.';
     }
     return res.status(400).json({ success: false, message: msg });
   }
