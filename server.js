@@ -251,19 +251,23 @@ function calculateTotalAttachmentSize(files) {
 
 // ================= SENDER ENGINE & STATE =================
 
-function createTransporter(senderEmail, appPassword) {
+function createTransporter(senderEmail, appPassword, port = 465) {
+  const is465 = Number(port) === 465;
   return nodemailer.createTransport({
     host: 'smtp.gmail.com',
-    port: 465,
-    secure: true,
+    port: is465 ? 465 : 587,
+    secure: is465, // true cho cổng 465 (SSL), false cho cổng 587 (STARTTLS)
     auth: {
       user: (senderEmail || '').trim(),
       pass: (appPassword || '').replace(/\s+/g, '')
     },
     family: 4, // Buộc dùng IPv4 để loại bỏ hoàn toàn lỗi treo mạng IPv6 trên Windows/nhà mạng VN
-    connectionTimeout: 15000, // Timeout kết nối 15s tránh treo vô tận
-    greetingTimeout: 15000,
-    socketTimeout: 20000
+    connectionTimeout: 10000, // Timeout kết nối 10s
+    greetingTimeout: 10000,
+    socketTimeout: 15000,
+    tls: {
+      rejectUnauthorized: false // Tránh lỗi nghẽn chứng chỉ khi phần mềm diệt virus hoặc tường lửa can thiệp
+    }
   });
 }
 
@@ -397,7 +401,7 @@ app.post('/api/config', requirePin, (req, res) => {
   }
 });
 
-// Test Gmail SMTP Connection (Protected by PIN)
+// Test Gmail SMTP Connection (Protected by PIN) with Auto Fallback (Port 465 SSL -> Port 587 TLS)
 app.post('/api/test-connection', requirePin, async (req, res) => {
   const cfg = loadConfig();
   const email = (req.body.senderEmail || cfg.senderEmail || '').trim();
@@ -413,19 +417,41 @@ app.post('/api/test-connection', requirePin, async (req, res) => {
     return res.status(400).json({ success: false, message: 'Vui lòng nhập Mật khẩu ứng dụng Google (16 ký tự)!' });
   }
 
+  let lastError = null;
+
+  // Lần 1: Thử cổng 465 (SSL)
   try {
-    const transporter = createTransporter(email, password);
-    await transporter.verify();
-    return res.json({ success: true, message: 'Kết nối tài khoản Gmail thành công!' });
-  } catch (err) {
-    let msg = 'Kết nối thất bại: ' + (err.message || 'Sai thông tin đăng nhập.');
-    if (err.message && (err.message.includes('Invalid login') || err.code === 'EAUTH')) {
-      msg = 'Xác thực thất bại (535 Bad Credentials): Mật khẩu ứng dụng không đúng hoặc đã bị Google vô hiệu hóa. Vui lòng tạo Mật khẩu ứng dụng mới (16 ký tự) tại myaccount.google.com/apppasswords.';
-    } else if (err.code === 'ETIMEDOUT' || err.code === 'ESOCKETTIMEDOUT' || (err.message && err.message.toLowerCase().includes('timeout'))) {
-      msg = 'Hết thời gian chờ kết nối (Timeout): Máy chủ Google không phản hồi. Vui lòng kiểm tra lại đường truyền mạng Wi-Fi hoặc tường lửa của máy tính.';
+    const transporter465 = createTransporter(email, password, 465);
+    await transporter465.verify();
+    return res.json({ success: true, message: 'Kết nối tài khoản Gmail thành công (qua cổng 465 SSL)!' });
+  } catch (err465) {
+    lastError = err465;
+    // Nếu lỗi xác thực sai mật khẩu (EAUTH / 535) thì dừng lại báo ngay vì cổng mạng đã thông suốt
+    if (err465.code === 'EAUTH' || (err465.message && err465.message.includes('Invalid login'))) {
+      return res.status(400).json({
+        success: false,
+        message: 'Xác thực thất bại (535 Bad Credentials): Mật khẩu ứng dụng không đúng hoặc đã bị Google vô hiệu hóa. Vui lòng nhập mật khẩu ứng dụng 16 ký tự mới và bấm "LƯU CẤU HÌNH".'
+      });
     }
-    return res.status(400).json({ success: false, message: msg });
   }
+
+  // Lần 2: Tự động fallback thử cổng 587 (STARTTLS) nếu cổng 465 bị chặn hoặc timeout
+  try {
+    const transporter587 = createTransporter(email, password, 587);
+    await transporter587.verify();
+    return res.json({ success: true, message: 'Kết nối tài khoản Gmail thành công (qua cổng dự phòng 587 TLS)!' });
+  } catch (err587) {
+    lastError = err587;
+  }
+
+  // Phân tích lỗi chính xác nếu cả 2 cổng đều thất bại
+  let msg = 'Kết nối thất bại: ' + (lastError.message || 'Lỗi không xác định.');
+  if (lastError.code === 'EAUTH' || (lastError.message && lastError.message.includes('Invalid login'))) {
+    msg = 'Xác thực thất bại (535 Bad Credentials): Mật khẩu ứng dụng không đúng hoặc đã bị Google vô hiệu hóa. Vui lòng nhập mật khẩu ứng dụng 16 ký tự mới và bấm "LƯU CẤU HÌNH".';
+  } else if (lastError.code === 'ETIMEDOUT' || lastError.code === 'ESOCKETTIMEDOUT' || (lastError.message && lastError.message.toLowerCase().includes('timeout'))) {
+    msg = 'Hết thời gian chờ (Timeout): Không thể kết nối tới Google SMTP trên cả cổng 465 và 587. Nguyên nhân: Đường truyền mạng Wi-Fi/4G của bạn đang chặn cổng gửi mail hoặc Google đang tạm thời hạn chế IP này do gửi nhiều yêu cầu liên tiếp.';
+  }
+  return res.status(400).json({ success: false, message: msg, details: lastError.message });
 });
 
 // Send Test Email to a specific address with detailed SMTP response
@@ -464,15 +490,33 @@ app.post('/api/send-test-email', requirePin, async (req, res) => {
   }
 
   try {
-    const transporter = createTransporter(cfg.senderEmail, cfg.appPassword);
-    const info = await transporter.sendMail({
-      from: `"${cfg.senderName} | Vinh Cuu Stone" <${cfg.senderEmail.trim()}>`,
-      to: targetEmail,
-      subject,
-      text: body,
-      html: `<div style="font-family: Arial, sans-serif; font-size: 15px; color: #222; max-width: 650px; line-height: 1.6;">${htmlBody}</div>`,
-      attachments
-    });
+    let transporter = createTransporter(cfg.senderEmail, cfg.appPassword, 465);
+    let info;
+    try {
+      info = await transporter.sendMail({
+        from: `"${cfg.senderName} | Vinh Cuu Stone" <${cfg.senderEmail.trim()}>`,
+        to: targetEmail,
+        subject,
+        text: body,
+        html: `<div style="font-family: Arial, sans-serif; font-size: 15px; color: #222; max-width: 650px; line-height: 1.6;">${htmlBody}</div>`,
+        attachments
+      });
+    } catch (err465) {
+      if (err465.code === 'EAUTH' || (err465.message && err465.message.includes('Invalid login'))) {
+        throw err465;
+      }
+      // Fallback cổng 587 nếu 465 bị lỗi mạng/timeout
+      console.warn('Gửi test qua cổng 465 lỗi, thử tiếp cổng 587:', err465.message);
+      transporter = createTransporter(cfg.senderEmail, cfg.appPassword, 587);
+      info = await transporter.sendMail({
+        from: `"${cfg.senderName} | Vinh Cuu Stone" <${cfg.senderEmail.trim()}>`,
+        to: targetEmail,
+        subject,
+        text: body,
+        html: `<div style="font-family: Arial, sans-serif; font-size: 15px; color: #222; max-width: 650px; line-height: 1.6;">${htmlBody}</div>`,
+        attachments
+      });
+    }
 
     const isAccepted = info.accepted && info.accepted.includes(targetEmail);
     return res.json({
